@@ -1,0 +1,58 @@
+# Auto-deploy Dadiweb ke VPS staging.
+#
+# Secrets di repo (Settings -> Secrets and variables -> Actions):
+#   VPS_HOST    - IP publik VPS staging (82.25.62.243)
+#   VPS_USER    - user SSH khusus deploy: `github-deploy`
+#                 (bukan user `muse`; hanya boleh sudo systemctl
+#                 stop/start/restart/status dadiweb-staging, dan
+#                 menulis ke /var/www/dadiweb lewat grup `muse`)
+#   VPS_SSH_KEY - private key SSH khusus deploy (JANGAN tulis di file ini)
+#   VPS_PORT    - 22
+#
+# Folder live di VPS sudah berupa git repo (branch main), jadi
+# `git pull --ff-only` di bawah bekerja. app.db set dan site-files/
+# tidak ikut repo (di-.gitignore), jadi tidak tertimpa oleh pull.
+#
+# Prosedur di dalam script ini sama dengan prosedur baku manual:
+# cadangan, preserve app.db set + site-files/, bun install, restart,
+# materialisasi file fisik, verifikasi. Migrasi baru TIDAK diterapkan
+# otomatis di sini — kalau ada file drizzle baru, deploy berhenti dan
+# pemilik yang menerapkan migrasinya manual saat service berhenti.
+
+name: Deploy Staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            set -e
+            cd /var/www/dadiweb
+            sudo systemctl stop dadiweb-staging
+            # Kalau langkah berikutnya gagal, service tetap di-start
+            # ulang supaya staging tidak tertinggal dalam keadaan mati.
+            trap 'sudo systemctl start dadiweb-staging || true' ERR
+            STAMP=$(date +%Y%m%d-%H%M%S)
+            cp -a /var/www/dadiweb "/var/www/dadiweb-lama-${STAMP}-auto"
+            git pull --ff-only
+            bun install
+            # Migrasi baru (bila ada) diterapkan manual oleh pemilik
+            # sebelum langkah start di bawah — jangan auto-apply di sini.
+            sudo systemctl start dadiweb-staging
+            sleep 3
+            bun ./scripts/materialize-site-files.ts
+            curl -fsS -o /dev/null http://127.0.0.1:3002/
+            curl -fsS -o /dev/null https://dadiweb.id/
+            echo "deploy-staging-ok"

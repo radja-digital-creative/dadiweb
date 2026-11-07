@@ -1,0 +1,11 @@
+node_modules/
+app.db
+app.db-wal
+app.db-shm
+app.test.db*
+site-files/
+# G13: file MP4 video hasil generate (data runtime, seperti site-files/)
+blobs/
+.bun-cache/
+.space-build/
+.DS_Store
