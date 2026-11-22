@@ -96,7 +96,7 @@ const PLAN_PRICE: Record<string, number> = {
   "Pro Plan": 299000,
   Bisnis: 799000,
 };
-const USAGE_CATEGORIES = ["AI Coding", "Gambar", "Database", "Video", "Lainnya"];
+const USAGE_CATEGORIES = ["AI Coding", "Gambar", "Database", "Lainnya"];
 
 const tokenField = z.string().min(1).max(200);
 

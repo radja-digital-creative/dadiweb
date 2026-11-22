@@ -12,3 +12,5 @@ DROP TABLE IF EXISTS `fal_video_settings`;
 DROP INDEX IF EXISTS `video_jobs_project_id_idx`;
 --> statement-breakpoint
 DROP INDEX IF EXISTS `video_jobs_fal_request_id_idx`;
+--> statement-breakpoint
+DELETE FROM `credit_usage` WHERE `category` = 'Video';
