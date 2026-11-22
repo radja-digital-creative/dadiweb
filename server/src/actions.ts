@@ -60,27 +60,6 @@ import {
   loadCloudflareSettingsForDeploy,
   setCloudflareSettings,
 } from "./cloudflare";
-import {
-  FalVideoError,
-  VideoEstimateError,
-  clearFalVideoKey,
-  estimateVideoCostFor,
-  getFalVideoSettingsStatus,
-  getVideoModels,
-  loadFalVideoKey,
-  setFalVideoKey,
-  setFalVideoTariff,
-  testFalVideoConnection,
-} from "./fal-video";
-import {
-  cancelVideoJob,
-  deleteProjectVideoBlobs,
-  getVideoJob,
-  listVideoJobs,
-  submitVideoJob,
-  toVideoJobOut,
-  type VideoBlobStore,
-} from "./video-jobs";
 import { chargeCredits } from "./credit-charges";
 import {
   isValidSiteSlug,
@@ -2488,10 +2467,8 @@ async function resolveLiveSite(db: Db, slug: string) {
   return best;
 }
 
-// G13-D — chargeCredits DIPINDAH ke server/src/credit-charges.ts tanpa
-// mengubah logika (video-jobs.ts butuh helper yang sama; impor dari sini
-// akan circular karena file ini mengimpor video-jobs.ts). Semua pemanggil
-// di file ini memakai impor tersebut.
+// chargeCredits tinggal di server/src/credit-charges.ts (dipindah agar
+// tidak circular import). Semua pemanggil di file ini memakai impor itu.
 
 // ---------------------------------------------------------------------------
 // G5-C — Pengaturan platform, tarif dinamis, dan log audit admin.
@@ -2611,13 +2588,11 @@ async function findTargetUser(
 // unggahan. Buku besar kredit DIPERTAHANKAN (tautan proyek dilepas) dan
 // penghapusan dicatat di project_deletion_log atas nama pemilik proyek.
 // Diekspor supaya skrip verifikasi bisa memanggilnya langsung (bukan
-// aksi publik). `blobs` opsional demi pemanggil lama — bila diberikan,
-// file MP4 video proyek ikut dihapus dari blob storage (CELAH 2).
+// aksi publik).
 export async function deleteProjectFully(
   db: Db,
   project: typeof schema.projects.$inferSelect,
-  blobs?: VideoBlobStore,
-): Promise<{ ledgerKept: number; videoBlobsDeleted: number }> {
+): Promise<{ ledgerKept: number }> {
   const projectId = project.id;
   const tables = await db
     .select()
@@ -2661,20 +2636,6 @@ export async function deleteProjectFully(
   await db
     .delete(schema.projectUploads)
     .where(eq(schema.projectUploads.projectId, projectId));
-  // G13-B — job video ikut terhapus bersama proyek. CELAH 2 (7 Nov
-  // 2026): bersihkan DULU file MP4-nya dari blob storage (sebelum baris
-  // job dihapus, agar local_path masih terbaca) — tanpa ini file MP4
-  // menjadi yatim di storage. Tanpa `blobs` langkah ini dilewati
-  // (pemanggil lama); semua call site aksi kini meneruskan ctx.blobs.
-  let videoBlobsDeleted = 0;
-  if (blobs) {
-    videoBlobsDeleted = (
-      await deleteProjectVideoBlobs(db, blobs, projectId)
-    ).deleted;
-  }
-  await db
-    .delete(schema.videoJobs)
-    .where(eq(schema.videoJobs.projectId, projectId));
   // Tampilan project chat: riwayat chat ikut terhapus bersama proyek
   // (pesan adalah turunan proyek, bukan riwayat keuangan — ledger tetap
   // dipertahankan di bawah dengan tautan proyek dilepas, pola G2).
@@ -2698,12 +2659,9 @@ export async function deleteProjectFully(
     detail:
       `Folder proyek, skema ${schemaNameForProject(projectId)} beserta kredensial DB-nya, ` +
       `artefak build, rahasia terenkripsi, dan metadata unggahan dihapus dalam satu transaksi. ` +
-      (blobs
-        ? `File video proyek (${videoBlobsDeleted} MP4) dihapus dari penyimpanan. `
-        : ``) +
       `${ledgerKept.length} baris riwayat kredit di ledger platform dipertahankan (tautan proyek dilepas).`,
   });
-  return { ledgerKept: ledgerKept.length, videoBlobsDeleted };
+  return { ledgerKept: ledgerKept.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -3828,7 +3786,7 @@ async function runChatBuildPipeline(
     if (isNewShell) {
       const projectRow = await ownedProject(db, user.id, projectId);
       if (projectRow) {
-        await deleteProjectFully(db, projectRow, ctx.blobs);
+        await deleteProjectFully(db, projectRow);
       } else {
         await db.delete(schema.projects).where(eq(schema.projects.id, projectId));
       }
@@ -4179,29 +4137,6 @@ const stateResponse = z.object({
     freeQuota: z.number(),
     deployCost: z.number(),
   }),
-});
-
-// G13-B — satu job video. playbackUrl adalah URL own-origin
-// (./blobs/...) dari MP4 yang sudah diunduh ke ctx.blobs —
-// SATU-SATUNYA sumber pemutaran/daftar. URL fal CDN (video_url) TIDAK
-// PERNAH dikembalikan ke client (hanya jejak sementara di DB).
-const videoJobOut = z.object({
-  id: z.number(),
-  projectId: z.number(),
-  modelKey: z.string(),
-  modelLabel: z.string(),
-  prompt: z.string(),
-  imageUrl: z.string().nullable(),
-  durationSec: z.number(),
-  resolution: z.string(),
-  creditsCost: z.number(),
-  status: z.string(),
-  playbackUrl: z.string().nullable(),
-  localPath: z.string().nullable(),
-  error: z.string().nullable(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  completedAt: z.string().nullable(),
 });
 
 export const Actions = {
@@ -4716,7 +4651,7 @@ export const Actions = {
         }
         const projectRow = await ownedProject(db, user.id, projectId);
         if (projectRow) {
-          await deleteProjectFully(db, projectRow, ctx.blobs);
+          await deleteProjectFully(db, projectRow);
         } else {
           await db
             .delete(schema.projects)
@@ -6305,7 +6240,7 @@ export const Actions = {
       // untuk pemilik dan admin (deleteProjectFully): folder, skema +
       // kredensial DB, artefak build, rahasia, dan unggahan dihapus;
       // riwayat kredit dipertahankan dan tercatat di project_deletion_log.
-      await deleteProjectFully(db, project, ctx.blobs);
+      await deleteProjectFully(db, project);
       ctx.invalidateQueries();
       return { ok: true };
     },
@@ -10396,7 +10331,7 @@ export const Actions = {
           ? await db.select().from(schema.users).where(eq(schema.users.id, project.userId))
           : [];
       const ownerEmail = ownerRows[0]?.email ?? "";
-      await deleteProjectFully(db, project, ctx.blobs);
+      await deleteProjectFully(db, project);
       await writeAdminAudit(db, user, {
         action: "adminDeleteProject",
         target: `proyek #${project.id} ${project.name}${ownerEmail ? ` milik ${ownerEmail}` : ""}`,
@@ -11800,674 +11735,6 @@ export const Actions = {
       });
       ctx.invalidateQueries();
       return { ok: true, error: null, configured: false };
-    },
-  }),
-
-  // G13-A — Video Dadiweb (fal.ai). Kunci disimpan terenkripsi
-  // AES-256-GCM pola DeepInfra (salt provider "fal") dan hanya petunjuk
-  // 4 karakter terakhirnya yang keluar; tarif video dihitung dari rumus
-  // terkunci (Rp54/kredit, markup 1,5×, kurs Rp16.500/$, kelipatan 5),
-  // bukan tabel mati. Estimasi biaya bisa dipakai pengguna login TANPA
-  // kunci terpasang; uji koneksi tanpa kunci gagal bersih.
-  getFalVideoSettings: defineAction({
-    description: "Mengambil status video fal.ai: kunci terpasang/belum (hanya petunjuk 4 karakter), daftar model + harga/detik, dan parameter rumus tarif — khusus admin.",
-    request: z.object({ token: tokenField }),
-    response: z.object({
-      isAdmin: z.boolean(),
-      configured: z.boolean(),
-      hint: z.string(),
-      tariff: z.object({
-        creditValueRp: z.number(),
-        markupX100: z.number(),
-        exchangeRateRpPerUsd: z.number(),
-        roundingStep: z.number(),
-      }),
-      models: z.array(
-        z.object({
-          key: z.string(),
-          label: z.string(),
-          endpointT2v: z.string(),
-          endpointI2v: z.string(),
-          minDuration: z.number(),
-          maxDuration: z.number(),
-          resolutions: z.array(
-            z.object({
-              resolution: z.string(),
-              pricePerSecUsd: z.number(),
-            }),
-          ),
-          isActive: z.boolean(),
-          isDefault: z.boolean(),
-        }),
-      ),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      if (user.email !== DEMO_EMAIL) {
-        return {
-          isAdmin: false,
-          configured: false,
-          hint: "",
-          tariff: { creditValueRp: 0, markupX100: 0, exchangeRateRpPerUsd: 0, roundingStep: 0 },
-          models: [],
-        };
-      }
-      const s = await getFalVideoSettingsStatus(db);
-      return {
-        isAdmin: true,
-        configured: s.configured,
-        hint: s.hint,
-        tariff: s.tariff,
-        models: s.models,
-      };
-    },
-  }),
-
-  setFalVideoKey: defineAction({
-    description: "Menyimpan kunci API fal.ai terenkripsi AES-256-GCM (hanya petunjuk 4 karakter, tidak pernah dikembalikan); string kosong menghapus kunci — khusus admin.",
-    request: z.object({
-      token: tokenField,
-      apiKey: z.string().max(500),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      configured: z.boolean(),
-      hint: z.string(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      if (user.email !== DEMO_EMAIL) {
-        return { ok: false, error: "Hanya admin yang dapat mengatur kunci fal.ai.", configured: false, hint: "" };
-      }
-      const trimmed = args.apiKey.trim();
-      if (trimmed !== "" && trimmed.length < 8) {
-        return { ok: false, error: "Kunci API fal.ai terlalu pendek (minimal 8 karakter).", configured: false, hint: "" };
-      }
-      try {
-        const before = await getFalVideoSettingsStatus(db);
-        const status = await setFalVideoKey(db, trimmed);
-        await writeAdminAudit(db, user, {
-          action: "setFalVideoKey",
-          target: "kunci API fal.ai",
-          beforeValue: before.configured
-            ? `terpasang (${before.hint})`
-            : "belum terpasang",
-          afterValue:
-            trimmed === ""
-              ? "belum terpasang (kunci dihapus)"
-              : `terpasang (${status.hint})`,
-        });
-        ctx.invalidateQueries();
-        return { ok: true, error: null, configured: status.configured, hint: status.hint };
-      } catch (e) {
-        return {
-          ok: false,
-          error:
-            e instanceof Error
-              ? e.message
-              : "Kunci fal.ai gagal disimpan terenkripsi.",
-          configured: false,
-          hint: "",
-        };
-      }
-    },
-  }),
-
-  clearFalVideoKey: defineAction({
-    description: "Menghapus kunci API fal.ai yang tersimpan; video kembali berstatus belum aktif sampai kunci dipasang lagi (khusus admin).",
-    request: z.object({ token: tokenField }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      configured: z.boolean(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      if (user.email !== DEMO_EMAIL) {
-        return {
-          ok: false,
-          error: "Hanya admin yang dapat menghapus kunci fal.ai.",
-          configured: false,
-        };
-      }
-      const before = await getFalVideoSettingsStatus(db);
-      await clearFalVideoKey(db);
-      await writeAdminAudit(db, user, {
-        action: "clearFalVideoKey",
-        target: "kunci API fal.ai",
-        beforeValue: before.configured
-          ? `terpasang (${before.hint})`
-          : "belum terpasang",
-        afterValue: "belum terpasang (kunci dihapus)",
-      });
-      ctx.invalidateQueries();
-      return { ok: true, error: null, configured: false };
-    },
-  }),
-
-  setFalVideoTariff: defineAction({
-    description: "Mengubah parameter rumus tarif video (nilai kredit Rp, markup, kurs, kelipatan pembulatan); berlaku untuk estimasi berikutnya, bukan retroaktif — khusus admin.",
-    request: z.object({
-      token: tokenField,
-      creditValueRp: z.number().int().min(1).max(1000000),
-      markupX100: z.number().int().min(100).max(1000),
-      exchangeRateRpPerUsd: z.number().int().min(1).max(1000000),
-      roundingStep: z.number().int().min(1).max(100),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      tariff: z.object({
-        creditValueRp: z.number(),
-        markupX100: z.number(),
-        exchangeRateRpPerUsd: z.number(),
-        roundingStep: z.number(),
-      }),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      const before = await getFalVideoSettingsStatus(db);
-      const beforeOut = before.tariff;
-      if (user.email !== DEMO_EMAIL) {
-        return { ok: false, error: "Hanya admin yang dapat mengubah tarif video.", tariff: beforeOut };
-      }
-      const tariff = {
-        creditValueRp: args.creditValueRp,
-        markupX100: args.markupX100,
-        exchangeRateRpPerUsd: args.exchangeRateRpPerUsd,
-        roundingStep: args.roundingStep,
-      };
-      const status = await setFalVideoTariff(db, tariff);
-      await writeAdminAudit(db, user, {
-        action: "setFalVideoTariff",
-        target: "tarif video fal.ai",
-        beforeValue: `Rp${beforeOut.creditValueRp}/kredit, markup ${beforeOut.markupX100 / 100}×, kurs Rp${beforeOut.exchangeRateRpPerUsd}/$, kelipatan ${beforeOut.roundingStep}`,
-        afterValue: `Rp${tariff.creditValueRp}/kredit, markup ${tariff.markupX100 / 100}×, kurs Rp${tariff.exchangeRateRpPerUsd}/$, kelipatan ${tariff.roundingStep}`,
-      });
-      ctx.invalidateQueries();
-      return { ok: true, error: null, tariff: status.tariff };
-    },
-  }),
-
-  estimateVideoCost: defineAction({
-    description: "Mengestimasi biaya video dari rumus terkunci (kredit, biaya API $ dan Rp, batas durasi model) — pengguna login, tanpa perlu kunci fal.ai terpasang.",
-    request: z.object({
-      token: tokenField,
-      modelKey: z.string().min(1).max(100),
-      durationSec: z.number().int().min(1).max(120),
-      resolution: z.string().min(1).max(20),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      modelKey: z.string(),
-      modelLabel: z.string(),
-      resolution: z.string(),
-      durationSec: z.number(),
-      minDuration: z.number(),
-      maxDuration: z.number(),
-      pricePerSecUsd: z.number(),
-      apiCostUsd: z.number(),
-      apiCostRp: z.number(),
-      credits: z.number(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      await requireUser(db, args.token);
-      const empty = {
-        ok: false as const,
-        error: "",
-        modelKey: "",
-        modelLabel: "",
-        resolution: "",
-        durationSec: 0,
-        minDuration: 0,
-        maxDuration: 0,
-        pricePerSecUsd: 0,
-        apiCostUsd: 0,
-        apiCostRp: 0,
-        credits: 0,
-      };
-      try {
-        const est = await estimateVideoCostFor(db, {
-          modelKey: args.modelKey.trim(),
-          durationSec: args.durationSec,
-          resolution: args.resolution.trim(),
-        });
-        return { ok: true, error: null, ...est };
-      } catch (e) {
-        return {
-          ...empty,
-          error:
-            e instanceof VideoEstimateError || e instanceof Error
-              ? e.message
-              : "Estimasi biaya video gagal.",
-        };
-      }
-    },
-  }),
-
-  // G13-C — Daftar model video untuk pengguna biasa (chat proyek).
-  // getFalVideoSettings khusus admin (non-admin mendapat models: []);
-  // aksi ini HANYA mengembalikan model AKTIF + batas durasi + resolusi
-  // + harga/detik + default — TANPA endpoint fal.ai, TANPA parameter
-  // tarif, TANPA petunjuk kunci. Dipakai pill Video di chat proyek
-  // untuk memilih model/durasi/resolusi sebelum generate.
-  listVideoModels: defineAction({
-    description: "Daftar model video aktif untuk pengguna login (label, batas durasi, resolusi + harga/detik, model default) — tanpa endpoint fal.ai dan tanpa info kunci; dipakai composer video di chat proyek.",
-    request: z.object({ token: tokenField }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      models: z.array(
-        z.object({
-          key: z.string(),
-          label: z.string(),
-          minDuration: z.number(),
-          maxDuration: z.number(),
-          resolutions: z.array(
-            z.object({
-              resolution: z.string(),
-              pricePerSecUsd: z.number(),
-            }),
-          ),
-          isDefault: z.boolean(),
-        }),
-      ),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      await requireUser(db, args.token);
-      try {
-        const models = (await getVideoModels(db)).filter((m) => m.isActive);
-        return {
-          ok: true,
-          error: null,
-          models: models.map((m) => ({
-            key: m.key,
-            label: m.label,
-            minDuration: m.minDuration,
-            maxDuration: m.maxDuration,
-            resolutions: m.resolutions,
-            isDefault: m.isDefault,
-          })),
-        };
-      } catch (e) {
-        return {
-          ok: false,
-          error:
-            e instanceof Error
-              ? e.message
-              : "Daftar model video gagal dimuat.",
-          models: [],
-        };
-      }
-    },
-  }),
-
-  testFalVideoConnection: defineAction({
-    description: "Menguji koneksi ke fal.ai dengan kunci tersimpan (GET pricing endpoint default); tanpa kunci gagal bersih 'kunci belum terpasang', kunci salah dilaporkan jujur (401) — khusus admin.",
-    request: z.object({ token: tokenField }),
-    response: z.object({
-      ok: z.boolean(),
-      status: z.string(),
-      latencyMs: z.number(),
-      detail: z.string(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      if (user.email !== DEMO_EMAIL) {
-        return {
-          ok: false,
-          status: "gagal",
-          latencyMs: 0,
-          detail: "Hanya admin yang dapat menguji koneksi fal.ai.",
-        };
-      }
-      try {
-        const res = await testFalVideoConnection(db);
-        return { ok: res.ok, status: res.status, latencyMs: res.latencyMs, detail: res.detail };
-      } catch (e) {
-        return {
-          ok: false,
-          status: "gagal",
-          latencyMs: 0,
-          detail:
-            e instanceof FalVideoError || e instanceof Error
-              ? e.message
-              : "Uji koneksi fal.ai gagal.",
-        };
-      }
-    },
-  }),
-
-  // G13-B — Job video (fal.ai) per proyek. Semua aksi user-scoped
-  // (proyek orang lain ditolak sebagai "tidak ditemukan"). Submit
-  // memvalidasi model/durasi/resolusi + cek saldo cukup, lalu submit
-  // async ke fal.ai (202) dan menyimpan job — TIDAK memotong kredit
-  // (potong hanya bila sukses = G13-D) dan TIDAK menunggu video
-  // selesai. getVideoJobs/getVideoJob menyinkronkan dulu job yang
-  // masih in-flight (polling-on-read, throttle ~10 detik, dedup via
-  // request_id; MP4 yang COMPLETED diunduh ke ctx.blobs dan diputar
-  // lewat playbackUrl own-origin, bukan fal.media). Webhook TIDAK
-  // diimplementasikan di gelombang ini (butuh endpoint publik di luar
-  // pola /actions) — lihat video-jobs.ts.
-  submitVideoJob: defineAction({
-    description: "Mengirim job video baru ke fal.ai untuk sebuah proyek (teks atau gambar-ke-video): validasi model/durasi/resolusi, cek saldo cukup, lalu submit async dan menyimpan job — tanpa memotong kredit (pemotongan hanya bila sukses, G13-D).",
-    request: z.object({
-      token: tokenField,
-      projectId: z.number().int().positive(),
-      prompt: z.string().min(1).max(2000),
-      modelKey: z.string().min(1).max(100),
-      durationSec: z.number().int().min(1).max(120),
-      resolution: z.string().min(1).max(20),
-      imageUrl: z.string().max(200000).optional(),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      job: videoJobOut.nullable(),
-      creditsCost: z.number(),
-      balance: z.number(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      try {
-        const res = await submitVideoJob(db, {
-          userId: user.id,
-          projectId: args.projectId,
-          prompt: args.prompt,
-          modelKey: args.modelKey.trim(),
-          durationSec: args.durationSec,
-          resolution: args.resolution.trim(),
-          imageUrl: args.imageUrl,
-        });
-        if (!res.ok || !res.job) {
-          return {
-            ok: false,
-            error: res.error ?? "Job video gagal dikirim.",
-            job: null,
-            creditsCost: res.creditsCost,
-            balance: res.balance,
-          };
-        }
-        ctx.invalidateQueries();
-        return {
-          ok: true,
-          error: null,
-          job: await toVideoJobOut(db, ctx.blobs, res.job),
-          creditsCost: res.creditsCost,
-          balance: res.balance,
-        };
-      } catch (e) {
-        return {
-          ok: false,
-          error:
-            e instanceof Error ? e.message : "Job video gagal dikirim.",
-          job: null,
-          creditsCost: 0,
-          balance: 0,
-        };
-      }
-    },
-  }),
-
-  // CELAH 1 (7 Nov 2026) — Buat proyek video dari prompt hero
-  // dashboard: satu panggilan membuat proyek draft "Proyek Kustom"
-  // (pola yang sama seperti sapaan di sendChatMessage) lalu submit
-  // job video ke fal.ai. Proyek TIDAK dibuat bila validasi gagal
-  // (model/durasi/resolusi, saldo kurang, kunci belum terpasang) —
-  // pre-flight di bawah memakai helper yang sama dengan
-  // submitVideoJob, jadi tidak ada proyek yatim. Bila submit gagal
-  // SETELAH proyek dibuat (mis. fal.ai menolak), proyek yang baru
-  // dibuat dihapus kembali (best-effort) supaya tidak ada proyek
-  // kosong tanpa video. Tidak ada pesan chat yang disisipkan: kartu
-  // job video tampil di timeline chat proyek via getVideoJobs, sama
-  // seperti submit dari chat.
-  createVideoProject: defineAction({
-    description:
-      "Membuat proyek draft baru dari prompt hero dashboard lalu mengirim job video pertama ke fal.ai (teks atau gambar-ke-video): validasi model/durasi/resolusi, cek saldo cukup, lalu submit async tanpa memotong kredit (pemotongan hanya bila sukses, G13-D).",
-    request: z.object({
-      token: tokenField,
-      prompt: z.string().min(1).max(2000),
-      modelKey: z.string().min(1).max(100),
-      durationSec: z.number().int().min(1).max(120),
-      resolution: z.string().min(1).max(20),
-      imageUrl: z.string().max(200000).optional(),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      projectId: z.number().nullable(),
-      job: videoJobOut.nullable(),
-      creditsCost: z.number(),
-      balance: z.number(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      const prompt = args.prompt.trim();
-      const fail = (
-        error: string,
-        creditsCost = 0,
-        balance = 0,
-      ): {
-        ok: false;
-        error: string;
-        projectId: null;
-        job: null;
-        creditsCost: number;
-        balance: number;
-      } => ({
-        ok: false,
-        error,
-        projectId: null,
-        job: null,
-        creditsCost,
-        balance,
-      });
-      if (prompt.length === 0) {
-        return fail("Prompt video tidak boleh kosong.");
-      }
-      // Pre-flight (helper yang sama dengan submitVideoJob): tidak
-      // ada proyek yang dibuat bila validasi/saldo/kunci gagal.
-      let creditsCost = 0;
-      try {
-        const est = await estimateVideoCostFor(db, {
-          modelKey: args.modelKey.trim(),
-          durationSec: args.durationSec,
-          resolution: args.resolution.trim(),
-        });
-        creditsCost = est.credits;
-      } catch (e) {
-        if (e instanceof VideoEstimateError) return fail(e.message);
-        throw e;
-      }
-      const account = await getAccount(db, user.id);
-      const balance = account?.balance ?? 0;
-      if (balance < creditsCost) {
-        return fail(
-          `Saldo kredit tidak mencukupi: video ini membutuhkan ${creditsCost} kredit, saldo Anda ${balance} kredit.`,
-          creditsCost,
-          balance,
-        );
-      }
-      if (!(await loadFalVideoKey(db))) {
-        return fail(
-          "Kunci API fal.ai belum terpasang di panel admin, jadi video belum bisa dibuat.",
-          creditsCost,
-          balance,
-        );
-      }
-      const inserted = await db
-        .insert(schema.projects)
-        .values({
-          userId: user.id,
-          name: "Proyek Kustom",
-          slug: slugify(`proyek-kustom-${Date.now()}`),
-          category: "Website",
-          status: "draft",
-          prompt,
-          spec: "{}",
-          source: "ai",
-          creditsCost: 0,
-          plannerMd: initialPlannerMd(),
-        })
-        .returning({ id: schema.projects.id });
-      const projectId = inserted[0]?.id ?? 0;
-      if (!projectId) throw new Error("Gagal membuat proyek");
-      await ensureProjectDbCredential(db, projectId);
-      // Submit job; bila gagal setelah proyek dibuat, hapus proyeknya
-      // kembali (best-effort) supaya tidak ada proyek kosong.
-      const cleanupProject = async () => {
-        const row = await ownedProject(db, user.id, projectId);
-        if (!row) return;
-        try {
-          await deleteProjectFully(db, row, ctx.blobs);
-        } catch {
-          // Best-effort: proyek yatim tetap tercatat, bukan error baru.
-        }
-      };
-      try {
-        const res = await submitVideoJob(db, {
-          userId: user.id,
-          projectId,
-          prompt,
-          modelKey: args.modelKey.trim(),
-          durationSec: args.durationSec,
-          resolution: args.resolution.trim(),
-          imageUrl: args.imageUrl,
-        });
-        if (!res.ok || !res.job) {
-          await cleanupProject();
-          return fail(
-            res.error ?? "Job video gagal dikirim.",
-            res.creditsCost,
-            res.balance,
-          );
-        }
-        ctx.invalidateQueries();
-        return {
-          ok: true,
-          error: null,
-          projectId,
-          job: await toVideoJobOut(db, ctx.blobs, res.job),
-          creditsCost: res.creditsCost,
-          balance: res.balance,
-        };
-      } catch (e) {
-        await cleanupProject();
-        return fail(
-          e instanceof Error ? e.message : "Job video gagal dikirim.",
-          creditsCost,
-          balance,
-        );
-      }
-    },
-  }),
-
-  getVideoJobs: defineAction({
-    description: "Daftar job video sebuah proyek (milik pengguna), terbaru dulu; job yang masih berjalan disinkronkan dulu ke fal.ai (polling-on-read) dan MP4 yang selesai diunduh ke penyimpanan lokal proyek.",
-    request: z.object({
-      token: tokenField,
-      projectId: z.number().int().positive(),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      jobs: z.array(videoJobOut),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      try {
-        const res = await listVideoJobs(db, ctx.blobs, {
-          userId: user.id,
-          projectId: args.projectId,
-        });
-        return { ok: res.ok, error: res.error, jobs: res.jobs };
-      } catch (e) {
-        return {
-          ok: false,
-          error:
-            e instanceof Error
-              ? e.message
-              : "Daftar video gagal dimuat.",
-          jobs: [],
-        };
-      }
-    },
-  }),
-
-  getVideoJob: defineAction({
-    description: "Detail satu job video (milik pengguna); bila masih berjalan, statusnya disinkronkan dulu ke fal.ai (polling-on-read) dan MP4 yang selesai diunduh ke penyimpanan lokal proyek.",
-    request: z.object({
-      token: tokenField,
-      jobId: z.number().int().positive(),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      job: videoJobOut.nullable(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      try {
-        const res = await getVideoJob(db, ctx.blobs, {
-          userId: user.id,
-          jobId: args.jobId,
-        });
-        return { ok: res.ok, error: res.error, job: res.job };
-      } catch (e) {
-        return {
-          ok: false,
-          error:
-            e instanceof Error ? e.message : "Video gagal dimuat.",
-          job: null,
-        };
-      }
-    },
-  }),
-
-  cancelVideoJob: defineAction({
-    description: "Membatalkan job video yang masih berjalan (cancel ke fal.ai + tandai cancelled); job yang sudah selesai/gagal tidak bisa dibatalkan.",
-    request: z.object({
-      token: tokenField,
-      jobId: z.number().int().positive(),
-    }),
-    response: z.object({
-      ok: z.boolean(),
-      error: z.string().nullable(),
-      job: videoJobOut.nullable(),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const user = await requireUser(db, args.token);
-      try {
-        const res = await cancelVideoJob(db, ctx.blobs, {
-          userId: user.id,
-          jobId: args.jobId,
-        });
-        if (res.ok) ctx.invalidateQueries();
-        return { ok: res.ok, error: res.error, job: res.job };
-      } catch (e) {
-        return {
-          ok: false,
-          error:
-            e instanceof Error
-              ? e.message
-              : "Pembatalan video gagal.",
-          job: null,
-        };
-      }
     },
   }),
 

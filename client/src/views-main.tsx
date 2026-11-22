@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import heroImg from "./assets/hero.webp";
 import {
@@ -20,44 +20,6 @@ type View,
 
 export interface Nav {
   go: (view: View, projectId?: number) => void;
-}
-
-type VideoModel = ApiResponse<typeof api, "listVideoModels">["models"][number];
-
-// CELAH 1 (7 Nov 2026) — durasi video yang diizinkan (keputusan
-// terkunci): 8 / 16 / 24 / 30 detik, default 8. Sama seperti di chat
-// proyek (views-project-chat.tsx, G13-C).
-const VIDEO_DURATIONS = [8, 16, 24, 30] as const;
-
-// CELAH 1 — perkecil gambar lampiran (I2V) di browser sebelum dikirim
-// sebagai data URI ke createVideoProject: server membatasi imageUrl
-// maks 200.000 karakter. Logika SAMA dengan downscaleImageFile di
-// views-project-chat.tsx (G13-C) — sengaja diduplikasi di sini supaya
-// composer chat tidak tersentuh perbaikan ini.
-async function downscaleImageFile(file: File): Promise<string | null> {
-  const raw = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Gambar gagal dibaca."));
-    reader.readAsDataURL(file);
-  });
-  if (raw.length <= 190_000) return raw;
-  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const el = new Image();
-    el.onload = () => resolve(el);
-    el.onerror = () => reject(new Error("Gambar gagal dibaca."));
-    el.src = raw;
-  });
-  const maxSide = 768;
-  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(img.width * scale));
-  canvas.height = Math.max(1, Math.round(img.height * scale));
-  const ctx2d = canvas.getContext("2d");
-  if (!ctx2d) return null;
-  ctx2d.drawImage(img, 0, 0, canvas.width, canvas.height);
-  const small = canvas.toDataURL("image/jpeg", 0.8);
-  return small.length <= 190_000 ? small : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,155 +64,15 @@ const FEATURE_CARDS = [
 export function DashboardView({
   state,
   nav,
-  token,
   onPrompt,
 }: {
   state: State;
   nav: Nav;
-  token: string;
   onPrompt: (text: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [chip, setChip] = useState("Website");
   const current = state.projects.find((p) => p.status === "online") ?? state.projects[0];
-
-  // CELAH 1 (7 Nov 2026) — Mode Video di hero dashboard (pill
-  // Coder/Video). Mode disimpan di state komponen saja (default
-  // Coder). Textarea `prompt` dipakai BERSAMA kedua mode, jadi pindah
-  // pill tidak pernah menghapus isi ketikan. Perilaku Coder di bawah
-  // ini TIDAK diubah: chip kategori, "Lampirkan referensi",
-  // "Mode: Auto", "Biaya generate", dan tombol "Buat dengan AI"
-  // tetap persis seperti sebelumnya.
-  const [mode, setMode] = useState<"coder" | "video">("coder");
-  const [videoModelKey, setVideoModelKey] = useState("wan-3.0");
-  const [videoDuration, setVideoDuration] = useState<number>(8);
-  const [videoResolution, setVideoResolution] = useState("720p");
-  const [attachDataUri, setAttachDataUri] = useState<string | null>(null);
-  const [attachName, setAttachName] = useState<string | null>(null);
-  const [attachError, setAttachError] = useState<string | null>(null);
-  const [videoError, setVideoError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // Daftar model untuk pengguna biasa (listVideoModels, BUKAN aksi
-  // admin). Hanya dimuat saat mode Video aktif.
-  const videoModels = useQuery({
-    queryKey: ["video-models", token],
-    queryFn: () => api.listVideoModels({ token }),
-    enabled: mode === "video",
-  });
-  const models: VideoModel[] = videoModels.data?.models ?? [];
-  const selectedModel =
-    models.find((m) => m.key === videoModelKey) ??
-    models.find((m) => m.isDefault);
-  // Bila model tersimpan tidak ada di daftar (mis. dinonaktifkan
-  // admin), pindah ke model default — sekali, lewat effect.
-  useEffect(() => {
-    if (models.length === 0) return;
-    if (!models.some((m) => m.key === videoModelKey)) {
-      const def = models.find((m) => m.isDefault) ?? models[0];
-      if (def) setVideoModelKey(def.key);
-    }
-  }, [models, videoModelKey]);
-  // Bila resolusi tersimpan tidak didukung model terpilih (mis. 480p
-  // di Kling 4.0), pindah ke 720p bila ada, kalau tidak ke resolusi
-  // pertama model itu.
-  useEffect(() => {
-    if (!selectedModel) return;
-    if (
-      !selectedModel.resolutions.some((r) => r.resolution === videoResolution)
-    ) {
-      const pref =
-        selectedModel.resolutions.find((r) => r.resolution === "720p") ??
-        selectedModel.resolutions[0];
-      if (pref) setVideoResolution(pref.resolution);
-    }
-  }, [selectedModel, videoResolution]);
-
-  // Estimasi kredit tampil langsung sebelum generate (tanpa kunci
-  // fal.ai, tanpa memotong saldo).
-  const estimate = useQuery({
-    queryKey: [
-      "video-estimate",
-      token,
-      videoModelKey,
-      videoDuration,
-      videoResolution,
-    ],
-    queryFn: () =>
-      api.estimateVideoCost({
-        token,
-        modelKey: videoModelKey,
-        durationSec: videoDuration,
-        resolution: videoResolution,
-      }),
-    enabled: mode === "video" && !!selectedModel,
-  });
-  const estimateOk = estimate.data?.ok === true;
-  const estimateCredits = estimateOk ? (estimate.data?.credits ?? 0) : 0;
-
-  // Submit hero Video: buat proyek baru + job video dalam satu
-  // panggilan (createVideoProject), lalu arahkan ke chat proyek itu —
-  // paralel dengan "Buat dengan AI" di mode Coder yang membuka
-  // CreateView. Sukses: navigasi; gagal: pesan error, ketikan tetap ada.
-  const createVideo = useMutation({
-    mutationFn: () =>
-      api.createVideoProject({
-        token,
-        prompt: prompt.trim(),
-        modelKey: videoModelKey,
-        durationSec: videoDuration,
-        resolution: videoResolution,
-        imageUrl: attachDataUri ?? undefined,
-      }),
-    onMutate: () => {
-      setVideoError(null);
-    },
-    onSuccess: (res) => {
-      if (!res.ok || !res.projectId) {
-        setVideoError(res.error ?? "Video gagal dibuat. Coba lagi.");
-        return;
-      }
-      nav.go("project", res.projectId);
-    },
-    onError: (e) => {
-      setVideoError(String(e instanceof Error ? e.message : e));
-    },
-  });
-
-  const onAttachFile = async (file: File | undefined) => {
-    setAttachError(null);
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setAttachError("Lampiran harus berupa gambar.");
-      return;
-    }
-    try {
-      const dataUri = await downscaleImageFile(file);
-      if (!dataUri) {
-        setAttachError(
-          "Gambar masih terlalu besar setelah diperkecil (batas lampiran ~140 KB). Pakai gambar yang lebih kecil.",
-        );
-        return;
-      }
-      setAttachDataUri(dataUri);
-      setAttachName(file.name);
-    } catch {
-      setAttachError("Gambar gagal dibaca. Coba gambar lain.");
-    }
-  };
-
-  const balance = state.account.balance;
-  const tooShort = prompt.trim().length < 2;
-  // Tombol "Buat video" hanya aktif bila kombinasi valid (model/
-  // durasi/resolusi hanya bisa dipilih dari daftar server), estimasi
-  // berhasil, dan saldo cukup untuk estimasi itu.
-  const videoCanSubmit =
-    mode === "video" &&
-    !tooShort &&
-    !createVideo.isPending &&
-    models.length > 0 &&
-    estimateOk &&
-    balance >= estimateCredits;
 
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -276,10 +98,7 @@ export function DashboardView({
               Dadiweb membantu kamu membuat website, aplikasi, dan sistem bisnis
               dengan AI. Cukup ketik perintah, sisanya biar AI yang kerjakan.
             </p>
-            {/* Chip kategori hanya relevan untuk mode Coder (jenis
-                website/aplikasi); di mode Video disembunyikan supaya
-                composer tidak berantakan. */}
-            {mode === "coder" && (
+            {(
               <div className="mt-5 flex flex-wrap gap-2">
                 {CATEGORY_CHIPS.map((c) => (
                   <button
@@ -299,200 +118,7 @@ export function DashboardView({
             )}
           </div>
 
-          {/* CELAH 1 — pill Coder/Video di atas kotak prompt hero.
-              Coder = perilaku sekarang persis; Video = composer video
-              (prompt + lampirkan gambar + pilih model/durasi/resolusi
-              + estimasi kredit + tombol "Buat video"). */}
-          <div
-            role="group"
-            aria-label="Mode"
-            className="relative mt-6 flex w-fit items-center gap-1 rounded-xl bg-white/5 p-1 ring-1 ring-white/10"
-          >
-            <button
-              type="button"
-              aria-pressed={mode === "coder"}
-              onClick={() => {
-                setMode("coder");
-                setVideoError(null);
-              }}
-              className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-lg px-4 text-sm font-bold ${
-                mode === "coder"
-                  ? "bg-[#2E6BFF] text-white ring-1 ring-[#2E6BFF]"
-                  : "text-slate-200 hover:bg-white/10"
-              }`}
-            >
-              <Icon name="code" size={15} /> Coder
-            </button>
-            <button
-              type="button"
-              aria-pressed={mode === "video"}
-              onClick={() => {
-                setMode("video");
-                setVideoError(null);
-              }}
-              className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-lg px-4 text-sm font-bold ${
-                mode === "video"
-                  ? "bg-[#2E6BFF] text-white ring-1 ring-[#2E6BFF]"
-                  : "text-slate-200 hover:bg-white/10"
-              }`}
-            >
-              <Icon name="play" size={15} /> Video
-            </button>
-          </div>
-
           <div className="relative mt-3 rounded-2xl border border-[var(--border)] bg-[#0A1130]/90 p-3 sm:p-4">
-            {mode === "video" && (
-              <div className="mb-3 space-y-3 rounded-2xl bg-[#0A1130] p-3 ring-1 ring-[var(--border-soft)]">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <label className="block text-xs font-bold text-[var(--dim)]">
-                    Model
-                    <select
-                      value={videoModelKey}
-                      onChange={(e) => setVideoModelKey(e.target.value)}
-                      disabled={createVideo.isPending || models.length === 0}
-                      className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[#0A1130] px-3 py-2.5 text-sm font-normal text-white focus:border-[var(--accent)] focus:outline-none disabled:opacity-60"
-                    >
-                      {models.map((m) => (
-                        <option key={m.key} value={m.key}>
-                          {m.label}
-                          {m.isDefault ? " (default)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block text-xs font-bold text-[var(--dim)]">
-                    Durasi
-                    <select
-                      value={videoDuration}
-                      onChange={(e) =>
-                        setVideoDuration(Number(e.target.value))
-                      }
-                      disabled={createVideo.isPending}
-                      className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[#0A1130] px-3 py-2.5 text-sm font-normal text-white focus:border-[var(--accent)] focus:outline-none disabled:opacity-60"
-                    >
-                      {VIDEO_DURATIONS.map((d) => (
-                        <option key={d} value={d}>
-                          {d} detik
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block text-xs font-bold text-[var(--dim)]">
-                    Resolusi
-                    <select
-                      value={videoResolution}
-                      onChange={(e) => setVideoResolution(e.target.value)}
-                      disabled={createVideo.isPending || !selectedModel}
-                      className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[#0A1130] px-3 py-2.5 text-sm font-normal text-white focus:border-[var(--accent)] focus:outline-none disabled:opacity-60"
-                    >
-                      {(selectedModel?.resolutions ?? []).map((r) => (
-                        <option key={r.resolution} value={r.resolution}>
-                          {r.resolution}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <p className="text-xs text-[var(--dim)]">
-                  Hanya resolusi yang didukung model terpilih yang bisa
-                  dipilih — mis. Kling 4.0 tidak punya 480p.
-                </p>
-
-                <div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      void onAttachFile(e.target.files?.[0]);
-                      e.target.value = "";
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={createVideo.isPending}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3 py-2 text-xs font-bold hover:bg-white/12 disabled:opacity-50"
-                  >
-                    <Icon name="attach" size={14} /> Lampirkan gambar
-                    (opsional, untuk image-to-video)
-                  </button>
-                  {attachDataUri && (
-                    <div className="mt-2 flex items-start gap-2">
-                      <img
-                        src={attachDataUri}
-                        alt={attachName ?? "Gambar lampiran"}
-                        className="h-20 w-20 rounded-xl object-cover ring-1 ring-[var(--border-soft)]"
-                      />
-                      <div>
-                        <p className="text-xs text-slate-200">
-                          {attachName ?? "Gambar terlampir"}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAttachDataUri(null);
-                            setAttachName(null);
-                          }}
-                          disabled={createVideo.isPending}
-                          className="mt-1 inline-flex items-center gap-1 rounded-lg bg-white/8 px-2 py-1 text-xs font-bold hover:bg-white/12 disabled:opacity-50"
-                        >
-                          <Icon name="x" size={12} /> Hapus lampiran
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {attachError && (
-                    <p role="alert" className="mt-2 text-xs text-rose-300">
-                      {attachError}
-                    </p>
-                  )}
-                </div>
-
-                <div className="text-sm">
-                  {videoModels.isPending ? (
-                    <p className="text-[var(--dim)]">
-                      Memuat model video…
-                    </p>
-                  ) : models.length === 0 ? (
-                    <p role="alert" className="text-rose-300">
-                      Model video belum tersedia — coba lagi sebentar lagi.
-                    </p>
-                  ) : estimate.isPending ? (
-                    <p className="text-[var(--dim)]">
-                      Menghitung estimasi kredit…
-                    </p>
-                  ) : estimateOk ? (
-                    <p>
-                      Estimasi:{" "}
-                      <strong>{fmtNum(estimateCredits)} kredit</strong> ·{" "}
-                      {estimate.data?.modelLabel} · {videoDuration} detik ·{" "}
-                      {videoResolution} · Saldo kamu {fmtNum(balance)}{" "}
-                      kredit.
-                      {estimateCredits > balance && (
-                        <span className="text-amber-300">
-                          {" "}
-                          Saldo tidak cukup untuk video ini — top up dulu
-                          lewat menu Kredit &amp; Langganan.
-                        </span>
-                      )}
-                    </p>
-                  ) : (
-                    <p role="alert" className="text-rose-300">
-                      {estimate.data?.error ??
-                        "Estimasi biaya video gagal dihitung."}
-                    </p>
-                  )}
-                  <p className="mt-1 text-xs text-[var(--dim)]">
-                    Kredit video dipotong HANYA bila video selesai (bukan
-                    saat tombol ditekan). Video gagal atau dibatalkan tidak
-                    memotong kredit. Video masuk ke proyek baru dan bisa
-                    dilihat di chat proyek itu.
-                  </p>
-                </div>
-              </div>
-            )}
             <label htmlFor="dash-prompt" className="sr-only">
               Deskripsikan website atau aplikasi yang ingin kamu buat
             </label>
@@ -502,15 +128,9 @@ export function DashboardView({
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
               maxLength={2000}
-              disabled={createVideo.isPending}
-              placeholder={
-                mode === "video"
-                  ? "Contoh: seekor kucing oranye melompat di atas meja kayu, sinar matahari pagi."
-                  : "Deskripsikan website atau aplikasi yang ingin kamu buat…"
-              }
+              placeholder="Deskripsikan website atau aplikasi yang ingin kamu buat…"
               className="w-full resize-none bg-transparent text-[15px] leading-relaxed text-white placeholder:text-[var(--dim-2)] focus:outline-none disabled:opacity-60"
             />
-            {mode === "coder" ? (
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1.5 rounded-lg bg-white/6 px-2.5 py-1.5 text-xs text-[var(--dim)]">
                   <Icon name="attach" size={14} /> Lampirkan referensi
@@ -528,40 +148,6 @@ export function DashboardView({
                   Buat dengan AI <Icon name="arrow" size={16} />
                 </button>
               </div>
-            ) : (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="text-xs text-[var(--dim-2)] tnum">
-                  {tooShort && prompt.length > 0
-                    ? "Minimal 2 karakter"
-                    : estimateOk
-                      ? `Estimasi ${fmtNum(estimateCredits)} kredit · Saldo ${fmtNum(balance)} kredit`
-                      : "Pilih model, durasi, dan resolusi di atas"}
-                </span>
-                <button
-                  onClick={() => createVideo.mutate()}
-                  disabled={!videoCanSubmit}
-                  className="ml-auto inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#2E6BFF] to-[#7C4DFF] px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-900/50 transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {createVideo.isPending ? "Membuat video…" : "Buat video"}{" "}
-                  <Icon name="play" size={16} />
-                </button>
-              </div>
-            )}
-            {videoError && (
-              <div
-                role="alert"
-                className="mt-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
-              >
-                {videoError}
-              </div>
-            )}
-            {createVideo.isPending && (
-              <p className="mt-2 text-xs text-[var(--dim)]">
-                Proyek baru sedang dibuat dan video dikirim ke fal.ai.
-                Setelah terkirim, kamu diarahkan ke chat proyek itu dan
-                status video diperbarui otomatis sampai selesai.
-              </p>
-            )}
           </div>
         </section>
 

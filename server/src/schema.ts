@@ -7,7 +7,6 @@
 // account. Templates stay a shared global catalog.
 
 import {
-index,
 integer,
 primaryKey,
 real,
@@ -132,10 +131,9 @@ export const creditLedger = sqliteTable("credit_ledger", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: integer("user_id").references(() => users.id),
   kind: text("kind", {
-    // G13-D — "video" ditambahkan untuk pemotongan video (fal.ai).
     // Enum ini hanya penanda TS: DDL SQLite (drizzle/0002) tidak punya
     // CHECK constraint untuk kind, jadi tidak ada pembangunan ulang tabel.
-    enum: ["generate", "deploy", "topup", "adjust", "bonus", "chat", "video"],
+    enum: ["generate", "deploy", "topup", "adjust", "bonus", "chat"],
   })
     .notNull()
     .default("generate"),
@@ -824,134 +822,3 @@ export const cloudflareSettings = sqliteTable("cloudflare_settings", {
     .$defaultFn(() => new Date()),
 });
 
-// ---------------------------------------------------------------------------
-// G13-A — Video Dadiweb (fal.ai).
-// - fal_video_settings: SATU baris (id=1), pola persis OAuth G8/G9 dan
-//   Cloudflare G10: kunci API fal.ai disimpan TERENKRIPSI AES-256-GCM
-//   dengan helper persis kunci DeepInfra (salt provider "fal"), hanya
-//   petunjuk 4 karakter terakhir yang dikembalikan. Kunci BOLEH kosong
-//   (belum terpasang adalah keadaan normal sampai Eka memasang kunci
-//   asli lewat panel admin). Parameter rumus tarif video juga tinggal di
-//   sini, bukan hardcode: kredit = ceil(biaya API Rp / credit_value_rp
-//   × markup) dibulatkan ke atas kelipatan rounding_step. Nilai awal
-//   persis keputusan terkunci Eka 7 Nov 2026: Rp54/kredit (termurah,
-//   Bisnis), markup 1,5× (markup_x100=150), kurs Rp16.500/$,
-//   kelipatan 5 — Wan 720p 8 detik = 370 kredit.
-// - video_models: registry model video (ID endpoint fal.ai, tipe,
-//   rentang durasi, resolusi + harga $/detik sebagai JSON). Pipeline
-//   video (G13-B) membaca registry ini, bukan hardcode. Resolusi
-//   disimpan sebagai JSON: [{resolution: "720p", pricePerSecUsd: 0.1}].
-//   Lineup awal: Wan 3.0 (default) + Kling 4.0 (premium). Veo 3.1
-//   (di-deprecate 17 Nov 2026) dan Sora 2 (sudah mati) TIDAK masuk.
-//   Kedua tabel TIDAK ber-FK ke users/projects (settings platform),
-//   jadi tidak menambah beban hapus akun/proyek.
-// ---------------------------------------------------------------------------
-
-export const falVideoSettings = sqliteTable("fal_video_settings", {
-  id: integer("id").primaryKey(),
-  falKeyEncrypted: text("fal_key_encrypted").notNull().default(""),
-  falKeyHint: text("fal_key_hint").notNull().default(""),
-  creditValueRp: integer("credit_value_rp").notNull().default(54),
-  markupX100: integer("markup_x100").notNull().default(150),
-  exchangeRateRpPerUsd: integer("exchange_rate_rp_per_usd")
-    .notNull()
-    .default(16500),
-  roundingStep: integer("rounding_step").notNull().default(5),
-  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
-
-export const videoModels = sqliteTable("video_models", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  key: text("key").notNull().unique(),
-  label: text("label").notNull(),
-  endpointT2v: text("endpoint_t2v").notNull(),
-  endpointI2v: text("endpoint_i2v").notNull(),
-  minDuration: integer("min_duration").notNull(),
-  maxDuration: integer("max_duration").notNull(),
-  resolutions: text("resolutions").notNull().default("[]"),
-  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
-  isDefault: integer("is_default", { mode: "boolean" })
-    .notNull()
-    .default(false),
-});
-
-// ---------------------------------------------------------------------------
-// G13-B — Job video Dadiweb (fal.ai).
-// - video_jobs: SATU baris per submit video ke fal.ai (T2V maupun I2V).
-//   fal_request_id unik (nullable sampai submit berhasil — di G13-B job
-//   hanya dibuat SETELAH submit 202, jadi selalu terisi; nullable
-//   dipertahankan sesuai kontrak migrasi). status: queued (tidak dipakai
-//   submit langsung, disiapkan untuk antrean lokal bila kelak ada),
-//   submitted (202 diterima, menunggu antre fal.ai), processing
-//   (IN_PROGRESS), completed (MP4 sudah diunduh ke blob storage),
-//   failed (fal.ai gagal / hasil tidak bisa diunduh), cancelled.
-// - video_url = URL fal CDN (v3b.fal.media) HANYA jejak sementara —
-//   publik dan kedaluwarsa ≥7 hari, JANGAN dipakai untuk pemutaran /
-//   daftar video. local_path = kunci blob `ctx.blobs` tempat MP4
-//   disimpan (`video-files/<slug-proyek>/<jobId>.mp4`); pemutaran lewat
-//   URL own-origin dari `ctx.blobs.getUrl(local_path)` (./blobs/...),
-//   BUKAN lewat fal.media. credits_cost = estimasi kredit saat submit
-//   (rumus terkunci G13-A); pemotongan kredit dilakukan G13-D saat job
-//   completed (deductVideoJobCredits di video-jobs.ts, via chargeCredits
-//   yang sama dengan generate/chat) — kolom credits_cost di sini adalah
-//   biaya yang TERCATAT saat submit dan itulah yang dipotong, bukan
-//   hitung ulang dari tarif saat selesai.
-// - Job ikut terhapus saat proyek dihapus (deleteProjectFully).
-// ---------------------------------------------------------------------------
-
-export const videoJobs = sqliteTable(
-  "video_jobs",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    projectId: integer("project_id")
-      .notNull()
-      .references(() => projects.id),
-    userId: integer("user_id").references(() => users.id),
-    modelKey: text("model_key").notNull(),
-    endpoint: text("endpoint").notNull(),
-    prompt: text("prompt").notNull().default(""),
-    imageUrl: text("image_url"),
-    duration: integer("duration").notNull(),
-    resolution: text("resolution").notNull(),
-    creditsCost: integer("credits_cost").notNull().default(0),
-    // G13-D — pemotongan kredit hanya bila job completed (lihat
-    // deductVideoJobCredits di video-jobs.ts). creditsDeducted 0/1 +
-    // deductedAt adalah penanda anti-dobel: sinkronisasi berulang setelah
-    // completed tidak boleh memotong dua kali. Kolom ditambahkan migrasi
-    // 0023 (ALTER TABLE, pola yang sama seperti 0020).
-    creditsDeducted: integer("credits_deducted").notNull().default(0),
-    deductedAt: integer("deducted_at", { mode: "timestamp_ms" }),
-    falRequestId: text("fal_request_id").unique(),
-    status: text("status", {
-      enum: [
-        "queued",
-        "submitted",
-        "processing",
-        "completed",
-        "failed",
-        "cancelled",
-      ],
-    })
-      .notNull()
-      .default("submitted"),
-    statusUrl: text("status_url"),
-    responseUrl: text("response_url"),
-    cancelUrl: text("cancel_url"),
-    videoUrl: text("video_url"),
-    localPath: text("local_path"),
-    error: text("error"),
-    createdAt: integer("created_at", { mode: "timestamp_ms" })
-      .notNull()
-      .$defaultFn(() => new Date()),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
-      .notNull()
-      .$defaultFn(() => new Date()),
-    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
-  },
-  (t) => [
-    index("video_jobs_project_id_idx").on(t.projectId),
-    index("video_jobs_fal_request_id_idx").on(t.falRequestId),
-  ],
-);

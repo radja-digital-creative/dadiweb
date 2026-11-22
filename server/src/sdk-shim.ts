@@ -18,10 +18,9 @@
 //   response, handler) seperti SDK, sehingga server staging bisa memanggil
 //   `action.handler(ctx, parsedArgs)` secara langsung.
 // - `ActionsModule` : tipe untuk objek `Actions` di `actions.ts`.
-// - `blobs` (G13) : penyimpanan file MP4 video di atas disk lokal
+// - `blobs` : penyimpanan file (blob) di atas disk lokal
 //   (`<root>/blobs/`, lihat `createLocalBlobStore` di bawah) —
-//   pengganti `ctx.blobs` (BlobClient) runtime Muse. Antarmuka sama
-//   persis dengan `VideoBlobStore` di `server/src/video-jobs.ts`;
+//   pengganti `ctx.blobs` (BlobClient) runtime Muse.
 //   `getUrl()` mengembalikan `./blobs/<key>` yang dilayani route
 //   `/blobs/*` di `server/index.ts`.
 //
@@ -43,12 +42,11 @@ import { dirname, resolve, sep } from "node:path";
 
 export { z };
 
-// G13 — blob storage lokal (khusus staging). Runtime Muse menyediakan
+// Blob storage lokal (khusus staging). Runtime Muse menyediakan
 // ctx.blobs (BlobClient); di staging tidak ada runtime itu, jadi shim
 // ini menyediakan implementasi yang sama persis di atas disk lokal
 // (root dari `createLocalBlobStore`, default `<root>/blobs/` di
-// server/index.ts), dengan antarmuka yang sama dengan VideoBlobStore
-// di server/src/video-jobs.ts. Folder blobs/ adalah data runtime
+// server/index.ts). Folder blobs/ adalah data runtime
 // seperti site-files/ — dipertahankan saat swap code, JANGAN ikut paket.
 export interface LocalBlobStore {
   put(
@@ -112,7 +110,7 @@ export interface Ctx {
     ): Promise<never>;
   };
   invalidateQueries(): void;
-  // G13 — penyimpanan file MP4 video (lihat createLocalBlobStore).
+  // Penyimpanan file (blob) lokal (lihat createLocalBlobStore).
   blobs: LocalBlobStore;
 }
 

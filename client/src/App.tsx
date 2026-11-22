@@ -525,7 +525,7 @@ export function App() {
                 </div>
               )}
             {route.view === "dashboard" && (
-              <DashboardView state={data} nav={nav} token={token ?? ""} onPrompt={goDashboardPrompt} />
+              <DashboardView state={data} nav={nav} onPrompt={goDashboardPrompt} />
             )}
             {route.view === "create" && (
               <CreateView

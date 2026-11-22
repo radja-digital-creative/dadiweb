@@ -1,9 +1,8 @@
-// Server staging Dadiweb G13 (Bun) — paket pasca-G12 (G13 video fal.ai:
-// provider + setting admin, job video + proyek, UI pill Coder/Video,
-// kredit video rumus terkunci). Staging glue dari paket G12 dipertahankan
-// (server/index.ts + sdk-shim.ts + package.json dengan "start"),
-// DITAMBAH G13: ctx.blobs disk-lokal (sdk-shim.ts) + route GET /blobs/*
-// (di bawah) agar MP4 video bisa disimpan dan diputar di staging.
+// Server staging Dadiweb (Bun) — paket pasca-G12. Staging glue dari
+// paket G12 dipertahankan (server/index.ts + sdk-shim.ts +
+// package.json dengan "start"), DITAMBAH: ctx.blobs disk-lokal
+// (sdk-shim.ts) + route GET /blobs/* (di bawah) untuk file blob
+// proyek di staging.
 // Prototipe TIDAK diubah: server/src/*.ts disalin verbatim kecuali impor
 // "@hatch/space-sdk" yang diganti "./sdk-shim" (pola paket G12).
 //
@@ -73,8 +72,7 @@ const DB_PATH =
 // WAJIB dipertahankan saat swap code, seperti set WAL (lihat README).
 const SITE_FILES_ROOT =
   process.env.SITE_FILES_ROOT ?? join(ROOT, "site-files");
-// G13 — file MP4 video (lihat server/src/video-jobs.ts: playbackUrl
-// "./blobs/..."). Folder blobs/ adalah data runtime seperti site-files/ —
+// Folder blobs/ adalah data runtime seperti site-files/ —
 // dipertahankan saat swap code, JANGAN ikut paket.
 const BLOBS_ROOT = process.env.BLOBS_ROOT ?? join(ROOT, "blobs");
 const PORT = Number(process.env.PORT ?? 3000);
@@ -101,7 +99,7 @@ const ctx: Ctx = {
   invalidateQueries: () => {
     // No-op di staging: client me-refresh lewat react-query-nya sendiri.
   },
-  // G13 — penyimpanan file MP4 video (disk lokal, lihat sdk-shim.ts).
+  // Penyimpanan file (blob) disk lokal (lihat sdk-shim.ts).
   blobs: createLocalBlobStore(BLOBS_ROOT),
 };
 
@@ -174,11 +172,10 @@ async function serveSiteSnapshot(urlPath: string): Promise<Response | null> {
   });
 }
 
-// G13 — melayani file MP4 video dari blobs/ (disk lokal, ditulis
-// ctx.blobs saat job video selesai). HANYA pola
-// video-files/<slug>/<id>.mp4 yang dilayani; pola lain (termasuk
-// traversal) dijawab 404. File yang belum ada dijawab 404 jujur —
-// jangan fallback ke SPA, supaya client tidak mengira video ada.
+// Melayani file blob dari blobs/ (disk lokal, ditulis via ctx.blobs).
+// HANYA pola video-files/<slug>/<id>.mp4 yang dilayani; pola lain
+// (termasuk traversal) dijawab 404. File yang belum ada dijawab 404
+// jujur — jangan fallback ke SPA, supaya client tidak mengira file ada.
 async function serveBlobs(urlPath: string): Promise<Response | null> {
   const clean = decodeURIComponent(urlPath).split("?")[0];
   if (!clean.startsWith("/blobs/")) return null;
@@ -192,7 +189,7 @@ async function serveBlobs(urlPath: string): Promise<Response | null> {
   }
   const file = Bun.file(candidate);
   if (!(await file.exists())) {
-    return new Response("Video belum tersedia.", { status: 404 });
+    return new Response("File belum tersedia.", { status: 404 });
   }
   return new Response(file, {
     headers: {
@@ -279,7 +276,7 @@ const server = Bun.serve({
       );
     }
     if (req.method === "GET") {
-      // G13: file MP4 video didahulukan (pola ketat di serveBlobs) —
+      // File blob didahulukan (pola ketat di serveBlobs) —
       // pola lain tetap jatuh ke site-files / SPA di bawah.
       const blobRes = await serveBlobs(url.pathname);
       if (blobRes) return blobRes;
@@ -295,9 +292,9 @@ const server = Bun.serve({
   },
 });
 
-console.log(`Dadiweb staging G13 berjalan di http://${HOST}:${PORT}`);
+console.log(`Dadiweb staging berjalan di http://${HOST}:${PORT}`);
 console.log(`Site files (fisik, snapshot live saja): ${SITE_FILES_ROOT}`);
-console.log(`Blobs video (disk lokal, G13): ${BLOBS_ROOT}`);
+console.log(`Blobs (disk lokal): ${BLOBS_ROOT}`);
 console.log(`Database: ${DB_PATH}`);
 console.log(
   "Generate AI: mengikuti handler asli — tanpa kunci -> stub jujur " +

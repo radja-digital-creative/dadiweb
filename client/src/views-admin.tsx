@@ -5,7 +5,6 @@ import {
   AdminSummary,
   AiProviderPanel,
   CloudflarePanel,
-  FalVideoPanel,
   GitHubOAuthPanel,
   GoogleOAuthPanel,
   SkillCatalogPanel,
@@ -232,7 +231,6 @@ export function AdminPage({
                 {module === "platform" && <GoogleOAuthPanel token={token} />}
                 {module === "platform" && <GitHubOAuthPanel token={token} />}
                 {module === "platform" && <CloudflarePanel token={token} />}
-                {module === "platform" && <FalVideoPanel token={token} />}
                 {completeSection && (
                   <AdminCompletePanel token={token} section={completeSection} />
                 )}

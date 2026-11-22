@@ -241,6 +241,11 @@ Aturan arsitektur yang tidak boleh dilanggar:
 
 ### 6.3a Video generation (G13) — blueprint
 
+> **DROPPED 22 Nov 2026 — keputusan Eka: full drop video, fokus web saja.**
+> Isi bagian ini adalah arsip (tidak lagi diimplementasikan): kode G13
+> sudah dihapus dari server + client dan tabelnya di-drop migrasi 0024.
+> Jangan membangun kembali fitur video tanpa keputusan baru Eka.
+
 Fitur video Dadiweb memakai provider **fal.ai** (khusus video;
 DeepInfra tetap untuk website/aplikasi). Keputusan Eka 7 Nov 2026.
 
@@ -304,13 +309,12 @@ DeepInfra tetap untuk website/aplikasi). Keputusan Eka 7 Nov 2026.
   Angka dari desain awal (misal Pro Rp 299.000/bulan) hanya
   usulan awal, bukan harga final — jangan menulisnya sebagai
   harga resmi di kode, dokumen, atau UI.
-- [BELUM] G13: video generation (fal.ai) — pill Coder/Video di atas
-  prompt, model Wan 3.0 + Kling 4.0, durasi 8/16/24/30 detik
-  default 8, tarif video terkunci (rumus Rp54 × markup 1,5),
-  video masuk proyek. Gelombang: G13-A provider+setting admin,
-  G13-B job video+proyek, G13-C UI, G13-D kredit+audit+staging.
-  (G13-E: 32 detik via jahitan, model tambahan — perlu keputusan
-  terpisah.)
+- [DROPPED] G13: video generation (fal.ai) — DROPPED 22 Nov 2026,
+  keputusan Eka: full drop video, fokus web saja. Dulu: pill
+  Coder/Video di atas prompt, model Wan 3.0 + Kling 4.0, durasi
+  8/16/24/30 detik default 8, tarif video terkunci (rumus Rp54 ×
+  markup 1,5), video masuk proyek. Gelombang G13-A–D sudah dihapus
+  dari kode; tabel di-drop migrasi 0024. (G13-E tidak jadi.)
 
 ### 6.5 Aturan perubahan blueprint & plan — HANYA TAMBAH, TIDAK BOLEH TIMPA
 

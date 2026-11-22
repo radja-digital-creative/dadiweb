@@ -478,8 +478,6 @@ const USAGE_COLORS: Record<string, string> = {
   "AI Coding": "#2E6BFF",
   Gambar: "#F59E0B",
   Database: "#B45309",
-  // G13-D — kategori baru pemakaian video (fal.ai).
-  Video: "#8B5CF6",
   Lainnya: "#64748B",
 };
 

@@ -1,21 +1,16 @@
 // Pemotongan kredit Dadiweb — SATU-SATUNYA helper pemotongan.
 //
-// Dipindah ke sini (G13-D) dari actions.ts TANPA mengubah logika apa pun:
-// actions.ts mengimpor video-jobs.ts, jadi video-jobs.ts tidak bisa
-// mengimpor helper ini dari actions.ts (circular import). Semua alur yang
-// memakai helper ini — generate (300), deploy (25), build Android (150),
-// chat (5), dan video (G13-D, hanya bila sukses) — memanggil fungsi yang
-// sama di sini.
+// Dipindah ke sini dari actions.ts TANPA mengubah logika apa pun (agar
+// tidak circular import). Semua alur yang memakai helper ini — generate
+// (300), deploy (25), build Android (150), chat (5) — memanggil fungsi
+// yang sama di sini.
 //
 // Perilaku yang dipertahankan persis:
 // - amount negatif = potong, positif = tambah; TIDAK ADA gerbang saldo
 //   di sini — penolakan saldo kurang dilakukan pemanggil SEBELUM memanggil
-//   (submit video, gerbang chat, gerbang generate). Bila pemanggil
-//   memanggil dengan saldo kurang, saldo BOLEH menjadi negatif dan
-//   balanceAfter negatif tercatat apa adanya di ledger. Itu perilaku
-//   helper ini sejak awal, bukan aturan baru G13-D; pemotongan video
-//   saat job selesai mengikuti perilaku yang sama (lihat
-//   deductVideoJobCredits di video-jobs.ts).
+//   (gerbang chat, gerbang generate). Bila pemanggil memanggil dengan
+//   saldo kurang, saldo BOLEH menjadi negatif dan balanceAfter negatif
+//   tercatat apa adanya di ledger. Itu perilaku helper ini sejak awal.
 // - Setiap pemotongan menulis satu baris credit_ledger (kind, label,
 //   category, amount, balanceAfter, projectId) dan mengakumulasi
 //   credit_usage per kategori (dipakai donut pemakaian dashboard).
@@ -35,12 +30,7 @@ export type CreditKind =
   | "topup"
   | "adjust"
   | "bonus"
-  | "chat"
-  // G13-D — pemotongan video (fal.ai), hanya bila job completed.
-  // DDL credit_ledger.kind TIDAK punya CHECK constraint (drizzle/0002:
-  // TEXT NOT NULL DEFAULT 'generate'), jadi nilai baru ini tidak butuh
-  // pembangunan ulang tabel; enum di schema.ts hanya penanda TS.
-  | "video";
+  | "chat";
 
 export async function chargeCredits(
   db: CreditDb,
